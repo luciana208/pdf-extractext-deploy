@@ -1,0 +1,33 @@
+# configuracion dinamica: dashboard, respaldo interno y certificados
+
+http:
+  routers:
+    traefik:
+      rule: "Host(`traefik.pdfextractext.localhost`)"
+      entryPoints:
+        - https
+      service: "api@internal"
+      tls: {}
+
+    # responde 503 cuando consul no tiene replicas de un servicio interno
+    internal-fallback:
+      rule: "HostRegexp(`^.+\\.internal$`)"
+      entryPoints:
+        - internal
+      priority: 1
+      service: sin-replicas
+
+  services:
+    sin-replicas:
+      loadBalancer:
+        servers: []
+
+tls:
+  certificates:
+    - certFile: /etc/certs/cert.pem
+      keyFile: /etc/certs/key.pem
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/certs/cert.pem
+        keyFile: /etc/certs/key.pem

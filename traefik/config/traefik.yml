@@ -1,0 +1,54 @@
+# configuracion estatica de traefik
+
+global:
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+
+ping: {}
+
+# corta rapido la conexion a replicas que ya no existen
+serversTransport:
+  forwardingTimeouts:
+    dialTimeout: 2s
+
+providers:
+  # contenedores con labels (consul y el propio dashboard)
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: mired
+    watch: true
+
+  # microservicios: se registran solos en consul con sus tags
+  consulCatalog:
+    endpoint:
+      address: consul:8500
+    exposedByDefault: false
+    refreshInterval: 5s
+
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+entryPoints:
+  http:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: https
+          scheme: https
+  https:
+    address: ":443"
+  # trafico entre servicios: no se publica fuera de la red de docker
+  internal:
+    address: ":8000"
+
+log:
+  level: INFO
+  format: common
+
+accessLog:
+  format: common

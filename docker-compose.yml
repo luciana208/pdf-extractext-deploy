@@ -1,0 +1,205 @@
+# sistema completo de pdf-extractext: proxy, discovery, base y los cuatro microservicios.
+# los repos de los servicios tienen que estar clonados al lado de este (../pdf-extract-service, etc).
+# arranque con una linea: ./scripts/up.sh  (o docker compose up -d --build)
+
+x-service-env: &service-env
+  TZ: America/Argentina/Buenos_Aires
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  CONSUL_ENABLED: "true"
+  CONSUL_URL: http://consul:8500
+  CONSUL_TOKEN: ${CONSUL_TOKEN:-}
+  HEALTH_CHECK_INTERVAL: 10s
+  RETRY_ATTEMPTS: ${TRAEFIK_RETRY_ATTEMPTS:-3}
+  RETRY_INITIAL_INTERVAL: ${TRAEFIK_RETRY_INTERVAL:-100ms}
+
+x-service: &service
+  restart: unless-stopped
+  stop_grace_period: 30s
+  networks:
+    - mired
+  depends_on:
+    consul:
+      condition: service_healthy
+
+services:
+  # proxy inverso: ruteo, balanceo, circuit breaker y reintentos
+  traefik:
+    image: traefik:v3.5
+    container_name: pdf-traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # el directorio entero, para que el watch vea las ediciones de dynamic.yml
+      - ./traefik/config:/etc/traefik:ro
+      - ./traefik/certs:/etc/certs:ro
+    environment:
+      TZ: America/Argentina/Buenos_Aires
+    networks:
+      mired:
+        # los servicios internos se llaman por estos nombres y caen en el entrypoint interno
+        aliases:
+          - validation.internal
+          - extract.internal
+          - documents.internal
+    depends_on:
+      consul:
+        condition: service_healthy
+
+  # service discovery: cada replica se registra sola y traefik lee el catalogo
+  consul:
+    image: hashicorp/consul:2.0.4
+    container_name: pdf-consul
+    restart: unless-stopped
+    command: agent -data-dir=/consul/data -config-dir=/consul/config
+    volumes:
+      - consul_data:/consul/data
+      - ./consul/config:/consul/config:ro
+    environment:
+      TZ: America/Argentina/Buenos_Aires
+      # evita el chown del entrypoint sobre el config de solo lectura
+      CONSUL_DISABLE_PERM_MGMT: "true"
+    ports:
+      - "127.0.0.1:8500:8500"
+    networks:
+      - mired
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.consul.rule=Host(`consul.${DOMAIN:-pdfextractext.localhost}`)"
+      - "traefik.http.routers.consul.entrypoints=https"
+      - "traefik.http.routers.consul.tls=true"
+      - "traefik.http.services.consul.loadbalancer.server.port=8500"
+
+  # base de datos, solo la usa pdf-extractext
+  mongo:
+    image: mongo:7-jammy
+    container_name: pdf-mongo
+    restart: unless-stopped
+    command: --wiredTigerCacheSizeGB 0.5
+    environment:
+      TZ: America/Argentina/Buenos_Aires
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?definir MONGO_ROOT_USERNAME en .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?definir MONGO_ROOT_PASSWORD en .env}
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+    networks:
+      - mired
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # api publica y saga
+  orchestrator:
+    <<: *service
+    build: ../pdf-extractext-orchestrator
+    image: pdf-extractext/orchestrator:${ORCHESTRATOR_VERSION:-1.0.0}
+    deploy:
+      replicas: ${ORCHESTRATOR_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      <<: *service-env
+      SERVICE_NAME: pdf-extractext-orchestrator
+      SERVICE_VERSION: ${ORCHESTRATOR_VERSION:-1.0.0}
+      ROUTER_NAME: api
+      PUBLIC_HOST: api.${DOMAIN:-pdfextractext.localhost}
+      INTERNAL_HOST: ""
+      MAX_PDF_SIZE_MB: ${MAX_PDF_SIZE_MB:-10}
+      VALIDATION_URL: http://validation.internal:8000
+      EXTRACTION_URL: http://extract.internal:8000
+      DOCUMENTS_URL: http://documents.internal:8000
+      EXTRACTION_TIMEOUT: ${EXTRACTION_TIMEOUT:-60}
+
+  # validacion de formato, tamaño y lectura
+  validation:
+    <<: *service
+    build: ../pdf-validation-service
+    image: pdf-extractext/validation:${VALIDATION_VERSION:-1.0.0}
+    deploy:
+      replicas: ${VALIDATION_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      <<: *service-env
+      SERVICE_NAME: pdf-validation-service
+      SERVICE_VERSION: ${VALIDATION_VERSION:-1.0.0}
+      ROUTER_NAME: validation
+      PUBLIC_HOST: ""
+      INTERNAL_HOST: validation.internal
+      MAX_PDF_SIZE_MB: ${MAX_PDF_SIZE_MB:-10}
+
+  # extraccion de contenido, tambien expuesto para el tp de carga
+  extract:
+    <<: *service
+    build: ../pdf-extract-service
+    image: pdf-extractext/extract:${EXTRACT_VERSION:-1.0.0}
+    deploy:
+      replicas: ${EXTRACT_REPLICAS:-3}
+      resources:
+        limits:
+          cpus: ${EXTRACT_CPUS:-1.0}
+          memory: ${EXTRACT_MEMORY:-1G}
+    environment:
+      <<: *service-env
+      SERVICE_NAME: pdf-extract-service
+      SERVICE_VERSION: ${EXTRACT_VERSION:-1.0.0}
+      ROUTER_NAME: extract
+      PUBLIC_HOST: extract.${DOMAIN:-pdfextractext.localhost}
+      INTERNAL_HOST: extract.internal
+      MAX_PDF_SIZE_MB: ${MAX_PDF_SIZE_MB:-10}
+      EXTRACT_WORKERS: ${EXTRACT_WORKERS:-1}
+      MAX_IN_FLIGHT: ${EXTRACT_MAX_IN_FLIGHT:-8}
+      # sin breaker por latencia: extraer un pdf grande tarda segundos
+      CIRCUIT_BREAKER_EXPRESSION: "NetworkErrorRatio() > 0.5 || ResponseCodeRatio(500, 600, 0, 600) > 0.5"
+
+  # persistencia en mongodb y pasos de reserva de la saga
+  documents:
+    <<: *service
+    build: ../pdf-extractext
+    image: pdf-extractext/documents:${DOCUMENTS_VERSION:-1.0.0}
+    deploy:
+      replicas: ${DOCUMENTS_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      <<: *service-env
+      SERVICE_NAME: pdf-extractext
+      SERVICE_VERSION: ${DOCUMENTS_VERSION:-1.0.0}
+      ROUTER_NAME: documents
+      PUBLIC_HOST: ""
+      INTERNAL_HOST: documents.internal
+      MONGO_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
+      DB_NAME: ${DB_NAME:-pdf_extraction_db}
+      RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-300}
+    depends_on:
+      consul:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+
+networks:
+  mired:
+    external: true
+
+volumes:
+  mongo_data:
+  consul_data:

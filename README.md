@@ -62,10 +62,17 @@ proyecto/
 
 ## Cómo levantarlo
 
-La primera vez, dar permiso de ejecución a los scripts (git guarda ese permiso al commitear):
+Con un solo comando, como pide la consigna:
 
 ```bash
-chmod +x scripts/*.sh
+docker compose up -d --build
+```
+
+Funciona sin preparar nada: compose crea la red `mired`, las credenciales de Mongo tienen valores por defecto y, si no hay certificados de mkcert, el servicio `certs` genera uno autofirmado antes de arrancar Traefik (k6 y Vegeta no validan el certificado; con curl, `CURL_INSECURE=1 ./scripts/smoke.sh`).
+
+Para un entorno completo, con certificados confiables para el navegador y un `.env` propio:
+
+```bash
 ./scripts/up.sh
 ```
 
@@ -73,9 +80,8 @@ El script:
 
 1. Verifica que estén los repos.
 2. Crea `.env` desde `.env.example` (después conviene cambiar la clave de Mongo).
-3. Crea la red `mired` si no existe.
-4. Genera los certificados con mkcert si no existen.
-5. Hace `docker compose up -d --build`.
+3. Genera los certificados con mkcert si no existen.
+4. Hace `docker compose up -d --build`.
 
 | URL | Qué es |
 |---|---|

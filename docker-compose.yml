@@ -22,6 +22,21 @@ x-service: &service
       condition: service_healthy
 
 services:
+  # certificado autofirmado si todavia no hay uno de mkcert; asi alcanza con docker compose up --build
+  certs:
+    image: alpine/openssl:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        [ -f /certs/cert.pem ] ||
+        openssl req -x509 -newkey rsa:2048 -nodes -days 825
+        -keyout /certs/key.pem -out /certs/cert.pem
+        -subj "/CN=${DOMAIN:-pdfextractext.localhost}"
+        -addext "subjectAltName=DNS:${DOMAIN:-pdfextractext.localhost},DNS:*.${DOMAIN:-pdfextractext.localhost}"
+    volumes:
+      - ./traefik/certs:/certs
+    network_mode: none
+
   # proxy inverso: ruteo, balanceo, circuit breaker y reintentos
   traefik:
     image: traefik:v3.5
@@ -47,6 +62,8 @@ services:
           - extract.internal
           - documents.internal
     depends_on:
+      certs:
+        condition: service_completed_successfully
       consul:
         condition: service_healthy
 
@@ -87,8 +104,8 @@ services:
     command: --wiredTigerCacheSizeGB 0.5
     environment:
       TZ: America/Argentina/Buenos_Aires
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?definir MONGO_ROOT_USERNAME en .env}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?definir MONGO_ROOT_PASSWORD en .env}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-pdfadmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-cambiar-esta-clave}
     volumes:
       - mongo_data:/data/db
     ports:
@@ -188,7 +205,7 @@ services:
       ROUTER_NAME: documents
       PUBLIC_HOST: ""
       INTERNAL_HOST: documents.internal
-      MONGO_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
+      MONGO_URL: mongodb://${MONGO_ROOT_USERNAME:-pdfadmin}:${MONGO_ROOT_PASSWORD:-cambiar-esta-clave}@mongo:27017/?authSource=admin
       DB_NAME: ${DB_NAME:-pdf_extraction_db}
       RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-300}
     depends_on:
@@ -198,8 +215,9 @@ services:
         condition: service_healthy
 
 networks:
+  # la crea compose con nombre fijo, asi alcanza con docker compose up --build
   mired:
-    external: true
+    name: mired
 
 volumes:
   mongo_data:

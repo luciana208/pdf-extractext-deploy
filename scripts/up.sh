@@ -18,10 +18,7 @@ if [ ! -f .env ]; then
     echo "se creo .env desde .env.example, revisar las contraseñas"
 fi
 
-# red compartida (como en el ejemplo de la catedra)
-docker network inspect mired >/dev/null 2>&1 || docker network create mired
-
-# certificados para https
+# certificados de mkcert para https (confiables en el navegador); sin ellos compose genera uno autofirmado
 if [ ! -f traefik/certs/cert.pem ]; then
     bash scripts/certs.sh
 fi

@@ -151,7 +151,7 @@ services:
     build: ../pdf-extract-service
     image: pdf-extractext/extract:${EXTRACT_VERSION:-1.0.0}
     deploy:
-      replicas: ${EXTRACT_REPLICAS:-3}
+      replicas: ${EXTRACT_REPLICAS:-5}
       resources:
         limits:
           cpus: ${EXTRACT_CPUS:-1.0}
@@ -164,10 +164,11 @@ services:
       PUBLIC_HOST: extract.${DOMAIN:-pdfextractext.localhost}
       INTERNAL_HOST: extract.internal
       MAX_PDF_SIZE_MB: ${MAX_PDF_SIZE_MB:-10}
-      EXTRACT_WORKERS: ${EXTRACT_WORKERS:-1}
-      MAX_IN_FLIGHT: ${EXTRACT_MAX_IN_FLIGHT:-8}
+      EXTRACT_WORKERS: ${EXTRACT_WORKERS:-2}
+      MAX_IN_FLIGHT: ${EXTRACT_MAX_IN_FLIGHT:-70}
       # sin breaker por latencia: extraer un pdf grande tarda segundos
-      CIRCUIT_BREAKER_EXPRESSION: "NetworkErrorRatio() > 0.5 || ResponseCodeRatio(500, 600, 0, 600) > 0.5"
+      GRANIAN_WORKERS: ${EXTRACT_GRANIAN_WORKERS:-1}
+      CIRCUIT_BREAKER_EXPRESSION: "${EXTRACT_CB_EXPRESSION:-NetworkErrorRatio() > 0.5 || ResponseCodeRatio(500, 503, 0, 600) > 0.5}"
 
   # persistencia en mongodb y pasos de reserva de la saga
   documents:
